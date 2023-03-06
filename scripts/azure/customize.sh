@@ -77,7 +77,7 @@ if [[ $gpuPlatform == *CUDA.OptiX* ]]; then
   buildDirectory="$binDirectory/$installDirectory/build"
   mkdir $buildDirectory
   $binPathCMake/cmake -B $buildDirectory -S "$binDirectory/$installDirectory/sdk" 1> "nvidia-optix-cmake.output.txt" 2> "nvidia-optix-cmake.error.txt"
-  make -j -C $buildDirectory 1> "nvidia-optix-make.output.txt" 2> "nvidia-optix-make.error.txt"
+  make -C $buildDirectory 1> "nvidia-optix-make.output.txt" 2> "nvidia-optix-make.error.txt"
   binPaths="$binPaths:$buildDirectory/bin"
   echo "Customize (End): NVIDIA OptiX"
 fi
@@ -119,9 +119,53 @@ if [ $machineType == "Scheduler" ]; then
   echo "Customize (End): CycleCloud"
 fi
 
+if [[ $renderManager == *Deadline* ]]; then
+  schedulerVersion="10.2.0.10"
+  schedulerInstallRoot="/deadline"
+  schedulerDatabaseHost=$(hostname)
+  schedulerDatabasePath="/deadlineDatabase"
+  schedulerCertificateFile="Deadline10Client.pfx"
+  schedulerCertificate="$schedulerInstallRoot/$schedulerCertificateFile"
+  schedulerBinPath="$schedulerInstallRoot/bin"
+  binPaths="$binPaths:$schedulerBinPath"
+
+  echo "Customize (Start): Deadline Download"
+  installFile="Deadline-$schedulerVersion-linux-installers.tar"
+  downloadUrl="$storageContainerUrl/Deadline/$schedulerVersion/$installFile$storageContainerSas"
+  curl -o $installFile -L $downloadUrl
+  tar -xzf $installFile
+  echo "Customize (End): Deadline Download"
+
+  if [ $machineType == "Scheduler" ]; then
+    echo "Customize (Start): Deadline Server"
+    installFile="DeadlineRepository-$schedulerVersion-linux-x64-installer.run"
+    ./$installFile --mode unattended --dbLicenseAcceptance accept --installmongodb true --dbhost $schedulerDatabaseHost --mongodir $schedulerDatabasePath --prefix $schedulerInstallRoot
+    mv /tmp/*_installer.log ./deadline-log-repository.txt
+    cp $schedulerDatabasePath/certs/$schedulerCertificateFile $schedulerInstallRoot/$schedulerCertificateFile
+    chmod +r $schedulerInstallRoot/$schedulerCertificateFile
+    echo "$schedulerInstallRoot *(rw,no_root_squash)" >> /etc/exports
+    exportfs -a
+    echo "Customize (End): Deadline Server"
+  else
+    echo "Customize (Start): Deadline Client"
+    installFile="DeadlineClient-$schedulerVersion-linux-x64-installer.run"
+    installArgs="--mode unattended --prefix $schedulerInstallRoot"
+    if [ $machineType == "Scheduler" ]; then
+      installArgs="$installArgs --slavestartup false --launcherdaemon false"
+    else
+      [ $machineType == "Farm" ] && workerStartup=true || workerStartup=false
+      installArgs="$installArgs --slavestartup $workerStartup --launcherdaemon true"
+    fi
+    ./$installFile $installArgs
+    mv /tmp/*_installer.log ./deadline-log-client.txt
+    $schedulerBinPath/deadlinecommand -ChangeRepositorySkipValidation Direct $schedulerInstallRoot $schedulerCertificate ""
+    echo "Customize (End): Deadline Client"
+  fi
+fi
+
 if [[ $renderManager == *RoyalRender* ]]; then
-  schedulerVersion="9.0.02"
-  schedulerInstallRoot="/RoyalRender"
+  schedulerVersion="9.0.03"
+  schedulerInstallRoot="/rr"
   schedulerBinPath="$schedulerInstallRoot/bin/lx64"
   binPaths="$binPaths:$schedulerBinPath"
 
@@ -220,51 +264,6 @@ if [[ $renderManager == *Qube* ]]; then
   fi
 fi
 
-if [[ $renderManager == *Deadline* ]]; then
-  schedulerVersion="10.2.0.10"
-  schedulerInstallRoot="/deadline"
-  schedulerClientMount="/mnt/deadline"
-  schedulerDatabaseHost=$(hostname)
-  schedulerDatabasePath="/deadlineDatabase"
-  schedulerCertificateFile="Deadline10Client.pfx"
-  schedulerCertificate="$schedulerClientMount/$schedulerCertificateFile"
-  schedulerBinPath="$schedulerInstallRoot/bin"
-  binPaths="$binPaths:$schedulerBinPath"
-
-  echo "Customize (Start): Deadline Download"
-  installFile="Deadline-$schedulerVersion-linux-installers.tar"
-  downloadUrl="$storageContainerUrl/Deadline/$schedulerVersion/$installFile$storageContainerSas"
-  curl -o $installFile -L $downloadUrl
-  tar -xzf $installFile
-  echo "Customize (End): Deadline Download"
-
-  if [ $machineType == "Scheduler" ]; then
-    echo "Customize (Start): Deadline Server"
-    installFile="DeadlineRepository-$schedulerVersion-linux-x64-installer.run"
-    ./$installFile --mode unattended --dbLicenseAcceptance accept --installmongodb true --dbhost $schedulerDatabaseHost --mongodir $schedulerDatabasePath --prefix $schedulerInstallRoot
-    mv /tmp/*_installer.log ./deadline-log-repository.txt
-    cp $schedulerDatabasePath/certs/$schedulerCertificateFile $schedulerInstallRoot/$schedulerCertificateFile
-    chmod +r $schedulerInstallRoot/$schedulerCertificateFile
-    echo "$schedulerInstallRoot *(rw,no_root_squash)" >> /etc/exports
-    exportfs -a
-    echo "Customize (End): Deadline Server"
-  else
-    echo "Customize (Start): Deadline Client"
-    installFile="DeadlineClient-$schedulerVersion-linux-x64-installer.run"
-    installArgs="--mode unattended --prefix $schedulerInstallRoot"
-    if [ $machineType == "Scheduler" ]; then
-      installArgs="$installArgs --slavestartup false --launcherdaemon false"
-    else
-      [ $machineType == "Farm" ] && workerStartup=true || workerStartup=false
-      installArgs="$installArgs --slavestartup $workerStartup --launcherdaemon true"
-    fi
-    ./$installFile $installArgs
-    mv /tmp/*_installer.log ./deadline-log-client.txt
-    $schedulerBinPath/deadlinecommand -ChangeRepositorySkipValidation Direct $schedulerClientMount $schedulerCertificate ""
-    echo "Customize (End): Deadline Client"
-  fi
-fi
-
 rendererPathPBRT="/usr/local/pbrt"
 rendererPathBlender="/usr/local/blender"
 rendererPathUnreal="/usr/local/unreal"
@@ -287,7 +286,7 @@ if [[ $renderEngines == *PBRT* ]]; then
   git clone --recursive https://github.com/mmp/pbrt-$versionInfo.git 1> "pbrt-$versionInfo-git.output.txt" 2> "pbrt-$versionInfo-git.error.txt"
   mkdir -p $rendererPathPBRTv3
   $binPathCMake/cmake -B $rendererPathPBRTv3 -S $binDirectory/pbrt-$versionInfo 1> "pbrt-$versionInfo-cmake.output.txt" 2> "pbrt-$versionInfo-cmake.error.txt"
-  make -j -C $rendererPathPBRTv3 1> "pbrt-$versionInfo-make.output.txt" 2> "pbrt-$versionInfo-make.error.txt"
+  make -C $rendererPathPBRTv3 1> "pbrt-$versionInfo-make.output.txt" 2> "pbrt-$versionInfo-make.error.txt"
   ln -s $rendererPathPBRTv3/pbrt $rendererPathPBRT/pbrt3
   echo "Customize (End): PBRT 3"
 
@@ -302,7 +301,7 @@ if [[ $renderEngines == *PBRT* ]]; then
   git clone --recursive https://github.com/mmp/pbrt-$versionInfo.git 1> "pbrt-$versionInfo-git.output.txt" 2> "pbrt-$versionInfo-git.error.txt"
   mkdir -p $rendererPathPBRTv4
   $binPathCMake/cmake -B $rendererPathPBRTv4 -S $binDirectory/pbrt-$versionInfo 1> "pbrt-$versionInfo-cmake.output.txt" 2> "pbrt-$versionInfo-cmake.error.txt"
-  make -j -C $rendererPathPBRTv4 1> "pbrt-$versionInfo-make.output.txt" 2> "pbrt-$versionInfo-make.error.txt"
+  make -C $rendererPathPBRTv4 1> "pbrt-$versionInfo-make.output.txt" 2> "pbrt-$versionInfo-make.error.txt"
   ln -s $rendererPathPBRTv4/pbrt $rendererPathPBRT/pbrt4
   echo "Customize (End): PBRT 4"
 fi
@@ -347,34 +346,39 @@ if [[ $renderEngines == *Blender* ]]; then
 fi
 
 if [[ $renderEngines == *Unreal* ]] || [[ $renderEngines == *Unreal.PixelStream* ]]; then
-  echo "Customize (Start): Unreal Engine"
+  echo "Customize (Start): Unreal Engine Setup"
   yum -y install libicu
-  versionInfo="5.1.0"
+  versionInfo="5.1.1"
   installFile="UnrealEngine-$versionInfo-release.tar.gz"
   downloadUrl="$storageContainerUrl/Unreal/$versionInfo/$installFile$storageContainerSas"
   curl -o $installFile -L $downloadUrl
   tar -xzf $installFile
   mkdir $rendererPathUnreal
-  mv UnrealEngine-$versionInfo-release $rendererPathUnreal
+  mv UnrealEngine-$versionInfo-release/* $rendererPathUnreal
   $rendererPathUnreal/Setup.sh 1> "unreal-engine-setup.output.txt" 2> "unreal-engine-setup.error.txt"
-  echo "Customize (End): Unreal Engine"
+  echo "Customize (End): Unreal Engine Setup"
 
-  if [ $machineType == "Workstation" ]; then
-    echo "Customize (Start): Unreal Project Files"
-    $rendererPathUnreal/GenerateProjectFiles.sh 1> "unreal-project-files-generate.output.txt" 2> "unreal-project-files-generate.error.txt"
-    make -j -C $rendererPathUnreal 1> "unreal-project-files-make.output.txt" 2> "unreal-project-files-make.error.txt"
-    echo "Customize (End): Unreal Project Files"
-  fi
+  echo "Customize (Start): Unreal Project Files Generate"
+  $rendererPathUnreal/GenerateProjectFiles.sh 1> "unreal-project-files-generate.output.txt" 2> "unreal-project-files-generate.error.txt"
+  echo "Customize (End): Unreal Project Files Generate"
+
+  echo "Customize (Start): Unreal Engine Build"
+  make -C $rendererPathUnreal 1> "unreal-engine-build.output.txt" 2> "unreal-engine-build.error.txt"
+  echo "Customize (End): Unreal Engine Build"
 
   if [[ $renderEngines == *Unreal.PixelStream* ]]; then
     echo "Customize (Start): Unreal Pixel Streaming"
-    git clone --recursive https://github.com/EpicGames/PixelStreamingInfrastructure 1> "unreal-stream-git.output.txt" 2> "unreal-stream-git.error.txt"
+    git clone --recursive https://github.com/EpicGames/PixelStreamingInfrastructure --branch UE5.1 1> "unreal-stream-git.output.txt" 2> "unreal-stream-git.error.txt"
+    yum -y install coturn
     installFile="PixelStreamingInfrastructure/SignallingWebServer/platform_scripts/bash/setup.sh"
     chmod +x $installFile
     ./$installFile 1> "unreal-stream-signalling.output.txt" 2> "unreal-stream-signalling.error.txt"
     installFile="PixelStreamingInfrastructure/Matchmaker/platform_scripts/bash/setup.sh"
     chmod +x $installFile
     ./$installFile 1> "unreal-stream-matchmaker.output.txt" 2> "unreal-stream-matchmaker.error.txt"
+    installFile="PixelStreamingInfrastructure/SFU/platform_scripts/bash/setup.sh"
+    chmod +x $installFile
+    ./$installFile 1> "unreal-stream-sfu.output.txt" 2> "unreal-stream-sfu.error.txt"
     echo "Customize (End): Unreal Pixel Streaming"
   fi
 fi
